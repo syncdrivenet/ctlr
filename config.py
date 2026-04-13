@@ -5,3 +5,4 @@ NODES = [
 DB_PATH = "ctlr.db"
 START_DELAY_MS = 3000
 TIMEOUT = 5.0
+BASE_SESSION_PATH = "/home/pi/recordings"

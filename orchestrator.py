@@ -2,6 +2,7 @@ import time
 import uuid as uuid_lib
 from config import NODES, START_DELAY_MS
 from nodes.client import CameraNode
+from session_manager import setup_session
 import db
 
 class Orchestrator:
@@ -10,13 +11,32 @@ class Orchestrator:
         self.current_uuid = None
 
     def preflight(self) -> bool:
+        all_ok = True
+
         for node in self.nodes:
             r = node.preflight()
+
+            # handle totally broken responses safely
+            if not isinstance(r, dict):
+                print(f"[PREFLIGHT] {node.host}: FAIL (invalid response)")
+                all_ok = False
+                continue
+
+            # handle network/API failure format
+            if r.get("ok") is False:
+                print(f"[PREFLIGHT] {node.host}: FAIL ({r.get('error')})")
+                all_ok = False
+                continue
+
+            # old-style success format (if your API still uses it)
             ready = r.get("success") and r.get("data", {}).get("ready")
+
             print(f"[PREFLIGHT] {node.host}: {'OK' if ready else 'FAIL'}")
+
             if not ready:
-                return False
-        return True
+                all_ok = False
+
+        return all_ok
 
     def start(self) -> bool:
         self.current_uuid = str(uuid_lib.uuid4())
