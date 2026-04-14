@@ -24,3 +24,13 @@ def update_session_stop(uuid: str, stopped_at: int):
     db.execute("UPDATE sessions SET stopped_at = ? WHERE uuid = ?", (stopped_at, uuid))
     db.commit()
     db.close()
+
+def get_sessions(limit: int = 50):
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    rows = db.execute(
+        "SELECT uuid, started_at, stopped_at FROM sessions ORDER BY started_at DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
