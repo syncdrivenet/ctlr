@@ -23,21 +23,23 @@ def log(component: str, message: str, level: str = "INFO"):
     payload = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "node": NODE,
-        "component": component,
         "level": level,
+        "component": component,
         "message": message
     }
     _publish(f"logging/{NODE}", payload)
 
 
 def metric(cpu: float, mem: float, temp: float, disk: float):
-    """Send health metrics to metrics/{node} topic."""
+    """Send health metrics to logging/{node} topic with level=METRICS."""
     payload = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "node": NODE,
+        "level": "METRICS",
+        "component": "health",
         "cpu": cpu,
         "mem": mem,
         "temp": temp,
         "disk": disk
     }
-    _publish(f"metrics/{NODE}", payload)
+    _publish(f"logging/{NODE}", payload)

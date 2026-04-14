@@ -120,7 +120,7 @@ def remount(name: str, config: dict) -> bool:
 def publish_metrics(statuses: list):
     """Publish storage metrics."""
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    payload = {"ts": ts, "node": NODE}
+    payload = {"ts": ts, "node": NODE, "level": "METRICS", "component": "storage"}
     
     for status in statuses:
         name = status["name"]
@@ -130,7 +130,7 @@ def publish_metrics(statuses: list):
         payload[f"{name}_write_ok"] = status["write_ok"]
         payload[f"{name}_latency_ms"] = status["latency_ms"]
     
-    mqtt_publish(f"metrics/{NODE}/storage", payload)
+    mqtt_publish(f"logging/{NODE}", payload)
 
 
 def main():
