@@ -1,6 +1,6 @@
 # Controller (ctlr)
 
-Central orchestrator for multi-camera recording system. Coordinates cameras, receives sync data, and processes recordings.
+Central orchestrator for multi-camera recording system. Coordinates cameras, receives sync data, processes recordings, and manages storage.
 
 ## Architecture
 
@@ -15,10 +15,10 @@ Central orchestrator for multi-camera recording system. Coordinates cameras, rec
 │  └──────┬──────┘    └─────────────┘    └──────┬──────┘             │
 │         │                                      │                    │
 │         ▼                                      ▼                    │
-│  ┌─────────────┐                        ┌─────────────┐            │
-│  │   SQLite    │                        │  /mnt/sync  │            │
-│  │   Sessions  │                        │  (output)   │            │
-│  └─────────────┘                        └─────────────┘            │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐            │
+│  │   SQLite    │    │   Mount     │    │  /mnt/sync  │            │
+│  │   Sessions  │    │   Watcher   │    │  (output)   │            │
+│  └─────────────┘    └─────────────┘    └─────────────┘            │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
          ▲                                        ▲
@@ -36,18 +36,19 @@ Central orchestrator for multi-camera recording system. Coordinates cameras, rec
 ```
 1. iOS App ─── POST /api/record/start ───► ctlr
 2. ctlr generates UUID + start_at timestamp
-3. ctlr ─── POST /record/start ───► cam-01, cam-02 (parallel)
+3. ctlr ─── POST /record/start ───► cam-01, cam-02, cam-03 (parallel)
 4. Cameras wait until start_at, then record synchronized
 5. iOS App ─── POST /api/record/stop ───► ctlr
-6. ctlr ─── POST /record/stop ───► cam-01, cam-02
+6. ctlr ─── POST /record/stop ───► all cameras
 7. Cameras finalize and rsync remaining segments
 ```
 
 ### Sync & Post-Process Flow
 ```
 During Recording:
-  cam-01 ──rsync──► /mnt/logging/cam-01/{uuid}/seg_*.mp4
-  cam-02 ──rsync──► /mnt/logging/cam-02/{uuid}/seg_*.mp4
+  cam-01 ──rsync──► /mnt/logging/melb-01-cam-01/{uuid}/seg_*.mp4
+  cam-02 ──rsync──► /mnt/logging/melb-01-cam-02/{uuid}/seg_*.mp4
+  cam-03 ──rsync──► /mnt/logging/melb-01-cam-03/{uuid}/seg_*.mp4
 
 After Recording (iOS triggers):
   iOS ──POST /api/sync/phone──► /mnt/logging/phone/{uuid}/*.csv
@@ -57,11 +58,11 @@ After Recording (iOS triggers):
                                     │
                                     ▼
                           /mnt/sync/{uuid}/
-                            ├── cam-01.mp4 (concatenated)
-                            ├── cam-02.mp4 (concatenated)
+                            ├── melb-01-cam-01.mp4 (concatenated)
+                            ├── melb-01-cam-02.mp4 (concatenated)
+                            ├── melb-01-cam-03.mp4 (concatenated)
                             ├── phone/
                             │   ├── accelerometer.csv
-                            │   ├── gyroscope.csv
                             │   └── ...
                             └── manifest.json
 ```
@@ -75,80 +76,54 @@ After Recording (iOS triggers):
 | `/api/record/start` | POST | Start synchronized recording |
 | `/api/record/stop` | POST | Stop recording |
 | `/api/sync/phone` | POST | Upload phone sensor data |
+| `/api/storage/status` | GET | Storage mount health |
+| `/api/storage/remount` | POST | Remount storage (for iOS) |
 | `/api/sessions` | GET | List recorded sessions |
 | `/health` | GET | Health check |
 
-### GET /api/status Response
+### GET /api/storage/status
+
+Check SSD mount health (used by iOS app):
 
 ```json
 {
-  "ready": true,
-  "recording": false,
-  "uuid": null,
-  "duration": 0,
-  "cameras": [
-    {
-      "name": "cam-01",
-      "connected": true,
-      "state": "idle",
-      "segment": null,
-      "cpu": 25.5,
-      "ram": 45.2,
-      "disk_free_gb": 28.5,
-      "temp": 52.3,
-      "sync_status": "idle",
-      "sync_segments_synced": 10,
-      "sync_segments_queued": 0,
-      "segments_on_ctlr": 10
-    }
-  ],
-  "storage": {
-    "used_gb": 150.5,
-    "total_gb": 500.0,
-    "percent": 30.1
+  "logging": {
+    "path": "/mnt/logging",
+    "mounted": true,
+    "accessible": true,
+    "free_gb": 548.12,
+    "total_gb": 589.51
   },
-  "system": {
-    "cpu_percent": 15.0,
-    "mem_percent": 35.0,
-    "temp_c": 45.0
-  }
+  "sync": {
+    "path": "/mnt/sync",
+    "mounted": true,
+    "accessible": true,
+    "free_gb": 331.32,
+    "total_gb": 331.5
+  },
+  "healthy": true
 }
 ```
 
-### GET /api/sync/status Response
+### POST /api/storage/remount
 
-Used by iOS for preflight checks before uploading phone data:
+Remount storage if stale/disconnected:
 
-```json
-{
-  "recording": false,
-  "uuid": "abc12345-...",
-  "all_synced": true,
-  "any_syncing": false,
-  "cameras": [
-    {
-      "name": "cam-01",
-      "connected": true,
-      "sync_status": "idle",
-      "segments_local": 10,
-      "segments_on_ctlr": 10,
-      "segments_pending": 0
-    }
-  ]
-}
+```bash
+# Remount all
+curl -X POST http://ctlr:8000/api/storage/remount
+
+# Remount specific
+curl -X POST http://ctlr:8000/api/storage/remount?mount=logging
+curl -X POST http://ctlr:8000/api/storage/remount?mount=sync
 ```
 
-### POST /api/sync/phone
+## MQTT Logging
 
-Preflight checks:
-1. Recording must be stopped
-2. No cameras actively syncing
-3. All camera segments must be synced
-
-On success:
-1. Saves phone CSVs to `/mnt/logging/phone/{uuid}/`
-2. Triggers `postprocess.py` in background
-3. Returns immediately
+| Topic | Content |
+|-------|---------|
+| `metrics/melb-01-ctlr/storage` | Storage health metrics (every 30s) |
+| `logging/melb-01-ctlr` | App logs: component, level, message |
 
 ## File Structure
 
@@ -167,33 +142,34 @@ On success:
 │   └── logger.py        # MQTT logging
 │
 └── script/
-    └── postprocess.py   # Video concatenation + data organization
+    ├── postprocess.py   # Video concatenation + data organization
+    └── mount_watcher.py # Storage monitor + auto-remount
 ```
 
 ## Storage Layout
 
 ```
-/mnt/logging/                    # Raw incoming data
-├── cam-01/
+/mnt/logging/                      # Raw incoming data (ext4)
+├── melb-01-cam-01/
 │   └── {uuid}/
 │       ├── seg_0000.mp4
 │       ├── seg_0001.mp4
 │       └── ...
-├── cam-02/
+├── melb-01-cam-02/
 │   └── {uuid}/
-│       └── ...
+├── melb-01-cam-03/
+│   └── {uuid}/
 └── phone/
     └── {uuid}/
         ├── accelerometer.csv
-        ├── gyroscope.csv
-        └── metadata.json
+        └── ...
 
-/mnt/sync/                       # Processed output
+/mnt/sync/                         # Processed output (exFAT - portable)
 └── {uuid}/
-    ├── cam-01.mp4              # Concatenated video
-    ├── cam-02.mp4
+    ├── melb-01-cam-01.mp4        # Concatenated video
+    ├── melb-01-cam-02.mp4
+    ├── melb-01-cam-03.mp4
     ├── phone/
-    │   ├── accelerometer.csv
     │   └── ...
     └── manifest.json
 ```
@@ -202,8 +178,9 @@ On success:
 
 ```python
 NODES = [
-    "melb-01-cam-01:8000",
-    "melb-01-cam-02:8000",
+    "melb-01-cam-01:8080",
+    "melb-01-cam-02:8080",
+    "melb-01-cam-03:8080",
 ]
 
 START_DELAY_MS = 3000  # Delay for synchronized start
@@ -212,21 +189,34 @@ START_DELAY_MS = 3000  # Delay for synchronized start
 ## Services
 
 ```bash
-# Start API
-sudo systemctl start ctlr
+# API service
+sudo systemctl start ctlr-api
+sudo systemctl status ctlr-api
+journalctl -u ctlr-api -f
 
-# View logs
-journalctl -u ctlr -f
+# Mount watcher (auto-remounts stale drives)
+sudo systemctl start mount-watcher
+sudo systemctl status mount-watcher
+journalctl -u mount-watcher -f
 
-# Restart
-sudo systemctl restart ctlr
+# Restart all
+sudo systemctl restart ctlr-api mount-watcher
 ```
+
+## Mount Watcher
+
+The `mount_watcher.py` service:
+- Checks `/mnt/logging` and `/mnt/sync` every 30s
+- Detects stale/inaccessible mounts
+- Auto-remounts if mount goes stale
+- Publishes storage metrics to MQTT
+- Logs mount failures for alerting
 
 ## Post-Processing
 
 The `postprocess.py` script:
 1. Scans `/mnt/logging/` for session UUID
-2. Concatenates video segments using ffmpeg
+2. Concatenates video segments using ffmpeg (lossless)
 3. Copies phone sensor data
 4. Creates `manifest.json` with session metadata
 5. Outputs to `/mnt/sync/{uuid}/`
@@ -238,3 +228,16 @@ The `postprocess.py` script:
 # Dry run (preview only)
 /home/pi/ctlr/script/postprocess.py --uuid abc12345-... --dry-run
 ```
+
+## Adding a New Camera
+
+1. Set up camera node (see cam README)
+2. Add node to `config.py`:
+   ```python
+   NODES = [
+       ...
+       "melb-01-cam-03:8080",
+   ]
+   ```
+3. Add camera SSH pubkey to `~/.ssh/authorized_keys`
+4. Restart ctlr-api: `sudo systemctl restart ctlr-api`

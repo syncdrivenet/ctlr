@@ -16,7 +16,7 @@ import threading
 
 from config import NODES, START_DELAY_MS
 from nodes.client import CameraNode
-from lib.logger import log
+from lib.logger import log, metric
 import db
 
 # ---------- Config ----------
@@ -104,8 +104,7 @@ def health_logger_loop():
     """Background thread to log health every 30s"""
     while True:
         stats = get_system_stats()
-        msg = f"cpu={stats['cpu_percent']}% | mem={stats['mem_percent']}% | temp={stats['temp_c']}C | disk={stats['disk_percent']}%"
-        log("health", msg)
+        metric(stats["cpu_percent"], stats["mem_percent"], stats["temp_c"] or 0, stats["disk_percent"])
         publish_status()
         time.sleep(30)
 

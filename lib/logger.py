@@ -1,25 +1,43 @@
-"""Simple MQTT logger for ctlr"""
+"""MQTT logger for ctlr - matches cam node format."""
 import subprocess
 import json
 from datetime import datetime, timezone
 
 MQTT_BROKER = "localhost"
 NODE = "melb-01-ctlr"
-TOPIC_BASE = f"logging/{NODE}/"
 
-def log(component: str, message: str, level: str = "INFO"):
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    payload = json.dumps({
-        "ts": ts,
-        "node": NODE,
-        "component": component,
-        "level": level,
-        "message": message
-    })
+
+def _publish(topic: str, payload: dict):
+    """Publish JSON payload to MQTT topic."""
     try:
         subprocess.run(
-            ["mosquitto_pub", "-h", MQTT_BROKER, "-t", f"{TOPIC_BASE}{component}", "-m", payload],
+            ["mosquitto_pub", "-h", MQTT_BROKER, "-t", topic, "-m", json.dumps(payload)],
             timeout=2, capture_output=True
         )
     except:
         pass
+
+
+def log(component: str, message: str, level: str = "INFO"):
+    """Send app log to logging/{node} topic."""
+    payload = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "node": NODE,
+        "component": component,
+        "level": level,
+        "message": message
+    }
+    _publish(f"logging/{NODE}", payload)
+
+
+def metric(cpu: float, mem: float, temp: float, disk: float):
+    """Send health metrics to metrics/{node} topic."""
+    payload = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "node": NODE,
+        "cpu": cpu,
+        "mem": mem,
+        "temp": temp,
+        "disk": disk
+    }
+    _publish(f"metrics/{NODE}", payload)
