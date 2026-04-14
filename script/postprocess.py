@@ -3,7 +3,7 @@
 Post-process recorded sessions:
 1. Scan /mnt/logging for session UUIDs
 2. Combine camera segments + phone data
-3. Output to /mnt/sync/<uuid>/
+3. Output to /mnt/sync/<date>_<shortid>/
 """
 
 import os
@@ -16,7 +16,7 @@ from datetime import datetime
 # Paths
 LOGGING_DIR = Path("/mnt/logging")
 SYNC_DIR = Path("/mnt/sync")
-CAMERAS = ["melb-01-cam-01", "melb-01-cam-02"]
+CAMERAS = ["melb-01-cam-01", "melb-01-cam-02", "melb-01-cam-03"]
 
 def find_all_uuids():
     """Find all unique session UUIDs across cameras and phone"""
@@ -42,6 +42,7 @@ def find_all_uuids():
 def get_session_sources(uuid):
     """Get all data sources for a session"""
     sources = {}
+    earliest_time = None
     
     # Camera sources
     for cam in CAMERAS:
@@ -49,12 +50,15 @@ def get_session_sources(uuid):
         if cam_path.exists():
             segments = sorted(cam_path.glob("seg_*.mp4"))
             if segments:
-                short_name = cam.split("-")[-1]  # cam-01, cam-02
-                sources[f"cam-{short_name}"] = {
+                sources[cam] = {
                     "path": cam_path,
                     "segments": segments,
                     "count": len(segments)
                 }
+                # Get earliest segment time for folder naming
+                first_seg_time = segments[0].stat().st_mtime
+                if earliest_time is None or first_seg_time < earliest_time:
+                    earliest_time = first_seg_time
     
     # Phone source
     phone_path = LOGGING_DIR / "phone" / uuid
@@ -67,7 +71,17 @@ def get_session_sources(uuid):
                 "count": len(csvs)
             }
     
-    return sources
+    return sources, earliest_time
+
+def get_folder_name(uuid, earliest_time):
+    """Generate folder name: YYYY-MM-DD_shortid"""
+    if earliest_time:
+        date_str = datetime.fromtimestamp(earliest_time).strftime("%Y-%m-%d")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    
+    short_id = uuid[:6]
+    return f"{date_str}_{short_id}"
 
 def concatenate_videos(segments, output_path):
     """Concatenate video segments using ffmpeg"""
@@ -100,32 +114,36 @@ def process_session(uuid, dry_run=False):
     """Process a single session"""
     print(f"\nProcessing: {uuid[:8]}...")
     
-    sources = get_session_sources(uuid)
+    sources, earliest_time = get_session_sources(uuid)
     if not sources:
         print("  No data found, skipping")
         return False
+    
+    folder_name = get_folder_name(uuid, earliest_time)
     
     # Show what we found
     for name, info in sources.items():
         count = info.get("count", 0)
         print(f"  Found {name}: {count} files")
+    print(f"  Output folder: {folder_name}")
     
     if dry_run:
         return True
     
     # Create output directory
-    output_dir = SYNC_DIR / uuid
+    output_dir = SYNC_DIR / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     manifest = {
         "uuid": uuid,
+        "folder": folder_name,
         "processed_at": datetime.now().isoformat(),
         "sources": {}
     }
     
     # Process cameras - concatenate videos
     for name, info in sources.items():
-        if name.startswith("cam-"):
+        if name.startswith("melb-"):
             segments = info["segments"]
             output_file = output_dir / f"{name}.mp4"
             
@@ -149,14 +167,14 @@ def process_session(uuid, dry_run=False):
         manifest["sources"]["phone"] = {
             "files": [f.name for f in sources["phone"]["files"]]
         }
-        print(f"  Copied {len(sources['phone']['files'])} phone files")
+        print(f"  Copied {len(sources[phone][files])} phone files")
     
     # Write manifest
     manifest_path = output_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
     
-    print(f"  Done -> /mnt/sync/{uuid[:8]}...")
+    print(f"  Done -> /mnt/sync/{folder_name}")
     return True
 
 def main():
@@ -172,9 +190,10 @@ def main():
     if args.list:
         print(f"Found {len(uuids)} sessions:\n")
         for uuid in uuids:
-            sources = get_session_sources(uuid)
+            sources, earliest_time = get_session_sources(uuid)
+            folder = get_folder_name(uuid, earliest_time)
             parts = ", ".join(sources.keys()) if sources else "no data"
-            print(f"  {uuid[:8]}...  [{parts}]")
+            print(f"  {folder}  [{parts}]")
         return
     
     if args.uuid:
