@@ -506,3 +506,46 @@ def remount_storage(mount: str = "all"):
         "success": all(r.get("success") for r in results.values()),
         "mounts": results
     }
+
+
+@app.post("/api/storage/unmount")
+def unmount_storage(mount: str = "sync"):
+    """Safely unmount storage for removal."""
+    import subprocess
+    
+    mounts = {
+        "logging": "/mnt/logging",
+        "sync": "/mnt/sync",
+    }
+    
+    if mount not in mounts:
+        raise HTTPException(status_code=400, detail=f"Unknown mount: {mount}")
+    
+    path = mounts[mount]
+    
+    log("storage", f"Unmounting {mount}...", "INFO")
+    
+    # Sync filesystem
+    subprocess.run(["sync"], timeout=30)
+    
+    # Unmount
+    result = subprocess.run(
+        ["sudo", "umount", path],
+        capture_output=True, text=True
+    )
+    
+    if result.returncode == 0:
+        log("storage", f"Unmounted {mount} successfully", "INFO")
+        return {"success": True, "mount": mount, "message": "Safe to remove"}
+    else:
+        # Try lazy unmount
+        result = subprocess.run(
+            ["sudo", "umount", "-l", path],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            log("storage", f"Lazy unmounted {mount}", "WARN")
+            return {"success": True, "mount": mount, "message": "Lazy unmount - wait before removing"}
+        else:
+            log("storage", f"Failed to unmount {mount}: {result.stderr}", "ERROR")
+            raise HTTPException(status_code=500, detail=f"Unmount failed: {result.stderr.strip()}")
