@@ -40,6 +40,7 @@ def metric(cpu: float, mem: float, temp: float, disk: float):
         "cpu": cpu,
         "mem": mem,
         "temp": temp,
-        "disk": disk
+        "disk": disk,
+        "message": f"cpu={cpu}% mem={mem}% temp={temp}C disk={disk}%"
     }
     _publish(f"logging/{NODE}", payload)

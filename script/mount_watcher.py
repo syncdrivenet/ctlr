@@ -122,6 +122,7 @@ def publish_metrics(statuses: list):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     payload = {"ts": ts, "node": NODE, "level": "METRICS", "component": "storage"}
     
+    parts = []
     for status in statuses:
         name = status["name"]
         payload[f"{name}_mounted"] = status["mounted"]
@@ -129,7 +130,10 @@ def publish_metrics(statuses: list):
         payload[f"{name}_free_gb"] = status["free_gb"]
         payload[f"{name}_write_ok"] = status["write_ok"]
         payload[f"{name}_latency_ms"] = status["latency_ms"]
+        ok = "OK" if status["mounted"] and status["accessible"] else "FAIL"
+        parts.append(f"{name}={ok} {status['free_gb']}GB")
     
+    payload["message"] = " | ".join(parts)
     mqtt_publish(f"logging/{NODE}", payload)
 
 
