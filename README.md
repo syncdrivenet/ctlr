@@ -120,10 +120,13 @@ curl -X POST http://ctlr:8000/api/storage/remount?mount=sync
 
 ## MQTT Logging
 
-| Topic | Content |
-|-------|---------|
-| `metrics/melb-01-ctlr/storage` | Storage health metrics (every 30s) |
-| `logging/melb-01-ctlr` | App logs: component, level, message |
+All logs are published to logging/{node} topics with structured JSON:
+
+| Component | Level | Description |
+|-----------|-------|-------------|
+| health | METRICS | System health: cpu, temp, mem, disk (every 5s) |
+| storage | METRICS | Storage mount status: mounted, free_gb (every 30s) |
+| storage | INFO/ERROR | Mount watcher events |
 
 ## File Structure
 
