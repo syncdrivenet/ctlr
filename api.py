@@ -33,6 +33,7 @@ class AppState:
         self.recording = False
         self.current_uuid = None
         self.start_time = None
+        self.cached_cameras = []
     
     @property
     def duration(self):
@@ -131,12 +132,60 @@ def health_logger_loop():
         publish_status()
         time.sleep(30)
 
+def camera_poller_loop():
+    """Background thread to poll cameras every 2s and cache results"""
+    def query_camera(node):
+        node_name = node.host.split(":")[0]
+        current_uuid = state.current_uuid
+        r = node.status()
+        if r.get("success"):
+            d = r.get("data", {})
+            sys_info = d.get("system", {})
+            sync = d.get("sync", {})
+            return {
+                "name": node_name,
+                "connected": True,
+                "state": d.get("state", "unknown"),
+                "segment": d.get("segment"),
+                "cpu": sys_info.get("cpu"),
+                "ram": sys_info.get("ram"),
+                "disk_free_gb": sys_info.get("disk_free_gb"),
+                "temp": sys_info.get("temp"),
+                "sync_status": sync.get("status", "idle"),
+                "sync_segments_synced": sync.get("segments_synced", 0),
+                "sync_segments_queued": sync.get("segments_queued", 0),
+                "sync_last": sync.get("last_sync"),
+                "sync_error": sync.get("error"),
+                "segments_on_ctlr": count_segments(node_name, current_uuid),
+            }
+        else:
+            return {
+                "name": node_name,
+                "connected": False,
+                "state": "offline",
+                "error": r.get("error")
+            }
+
+    while True:
+        cameras = []
+        with ThreadPoolExecutor(max_workers=len(state.nodes)) as executor:
+            futures = {executor.submit(query_camera, node): node for node in state.nodes}
+            for future in as_completed(futures):
+                try:
+                    cameras.append(future.result())
+                except Exception as e:
+                    node = futures[future]
+                    cameras.append({"name": node.host.split(":")[0], "connected": False, "state": "error", "error": str(e)})
+        cameras.sort(key=lambda c: c["name"])
+        state.cached_cameras = cameras
+        time.sleep(2)
+
 # ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
-    t = threading.Thread(target=health_logger_loop, daemon=True)
-    t.start()
+    threading.Thread(target=health_logger_loop, daemon=True).start()
+    threading.Thread(target=camera_poller_loop, daemon=True).start()
     log("api", "ctlr API started")
     yield
     log("api", "ctlr API stopped")
@@ -155,80 +204,20 @@ app.add_middleware(
 
 @app.get("/api/status")
 def get_status():
-    """Get system status with camera sync info - queries cameras in parallel"""
-    current_uuid = state.current_uuid
-    
-    def query_camera(node):
-        """Query a single camera - runs in thread pool"""
-        node_name = node.host.split(":")[0]
-        r = node.status()
-        
-        if r.get("success"):
-            d = r.get("data", {})
-            sys_info = d.get("system", {})
-            sync = d.get("sync", {})
-            cam_state = d.get("state", "unknown")
-            cam_segment = d.get("segment")
-            
-            # Count segments on ctlr for this camera
-            segments_on_ctlr = count_segments(node_name, current_uuid)
-            
-            return {
-                "name": node_name,
-                "connected": True,
-                "state": cam_state,
-                "segment": cam_segment,
-                "cpu": sys_info.get("cpu"),
-                "ram": sys_info.get("ram"),
-                "disk_free_gb": sys_info.get("disk_free_gb"),
-                "temp": sys_info.get("temp"),
-                "sync_status": sync.get("status", "idle"),
-                "sync_segments_synced": sync.get("segments_synced", 0),
-                "sync_segments_queued": sync.get("segments_queued", 0),
-                "sync_last": sync.get("last_sync"),
-                "sync_error": sync.get("error"),
-                "segments_on_ctlr": segments_on_ctlr,
-            }
-        else:
-            return {
-                "name": node_name,
-                "connected": False,
-                "state": "offline",
-                "error": r.get("error")
-            }
-    
-    # Query all cameras in parallel
-    cameras = []
-    with ThreadPoolExecutor(max_workers=len(state.nodes)) as executor:
-        futures = {executor.submit(query_camera, node): node for node in state.nodes}
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                cameras.append(result)
-            except Exception as e:
-                node = futures[future]
-                cameras.append({
-                    "name": node.host.split(":")[0],
-                    "connected": False,
-                    "state": "error",
-                    "error": str(e)
-                })
-    
-    # Sort cameras by name for consistent ordering
-    cameras.sort(key=lambda c: c["name"])
-    
-    # Check if all ready
+    """Get system status - returns cached camera data for instant response"""
+    cameras = state.cached_cameras
+
     all_ready = all(
         c.get("connected") and c.get("state") == "idle"
         for c in cameras
-    )
-    
+    ) if cameras else False
+
     stats = get_system_stats()
-    
+
     return {
         "ready": all_ready and not state.recording,
         "recording": state.recording,
-        "uuid": current_uuid,
+        "uuid": state.current_uuid,
         "duration": state.duration,
         "cameras": cameras,
         "storage": {
