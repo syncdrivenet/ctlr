@@ -3,6 +3,7 @@ ctlr REST API - Camera orchestration + sync endpoints
 """
 import os
 import time
+import json
 import uuid as uuid_lib
 import shutil
 import psutil
@@ -70,6 +71,20 @@ def get_system_stats():
         "disk_total_gb": disk_total_gb,
         "disk_percent": disk_percent
     }
+
+def get_can_status():
+    """Read CAN status from listener status file."""
+    try:
+        with open("/tmp/can_status.json") as f:
+            data = json.load(f)
+            return {
+                "connected": data.get("connected", False),
+                "file_size_bytes": data.get("file_size_bytes", 0),
+                "frame_count": data.get("frame_count", 0),
+            }
+    except:
+        return {"connected": False, "file_size_bytes": 0, "frame_count": 0}
+
 
 def count_segments(node_id: str, uuid: Optional[str]) -> int:
     """Count synced segments for a camera/uuid on ctlr."""
@@ -198,7 +213,8 @@ def get_status():
             "cpu_percent": stats["cpu_percent"],
             "mem_percent": stats["mem_percent"],
             "temp_c": stats["temp_c"]
-        }
+        },
+        "can": get_can_status()
     }
 
 @app.get("/api/sync/status")
