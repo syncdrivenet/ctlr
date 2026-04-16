@@ -78,6 +78,9 @@ After Recording (iOS triggers):
 | `/api/sync/phone` | POST | Upload phone sensor data |
 | `/api/storage/status` | GET | Storage mount health |
 | `/api/storage/remount` | POST | Remount storage (for iOS) |
+| `/api/storage/unmount` | POST | Unmount storage partition |
+| `/api/storage/eject` | POST | Safe eject (stops services, unmounts) |
+| `/api/storage/mount` | POST | Mount and restart services |
 | `/api/sessions` | GET | List recorded sessions |
 | `/health` | GET | Health check |
 
@@ -244,3 +247,45 @@ The `postprocess.py` script:
    ```
 3. Add camera SSH pubkey to `~/.ssh/authorized_keys`
 4. Restart ctlr-api: `sudo systemctl restart ctlr-api`
+
+### POST /api/storage/eject
+
+Safely eject drive - stops services, syncs, unmounts both partitions:
+
+```bash
+curl -X POST http://ctlr:8000/api/storage/eject
+```
+
+Success response:
+```json
+{"success": true, "message": "Safe to remove drive"}
+```
+
+If blocked:
+```json
+{"success": false, "message": "Video processing in progress"}
+```
+
+Services stopped: can-listener, mount-watcher, log-subscriber
+
+### POST /api/storage/mount
+
+Re-mount drive and restart services:
+
+```bash
+curl -X POST http://ctlr:8000/api/storage/mount
+```
+
+### CAN Bus Status
+
+`/api/status` includes CAN bus info (reads from `/tmp/can_status.json`):
+
+```json
+{
+  "can": {
+    "connected": true,
+    "file_size_bytes": 100012653,
+    "frame_count": 121497
+  }
+}
+```
