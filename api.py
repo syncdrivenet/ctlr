@@ -467,8 +467,8 @@ def remount_storage(mount: str = "all"):
     import subprocess
     
     mounts = {
-        "logging": {"path": "/mnt/logging", "device": "/dev/sdb1", "fstype": "ext4", "opts": "defaults"},
-        "sync": {"path": "/mnt/sync", "device": "/dev/sdb2", "fstype": "exfat", "opts": "defaults,uid=1000,gid=1000"},
+        "logging": {"path": "/mnt/logging", "device": "/dev/sda1", "fstype": "ext4", "opts": "defaults"},
+        "sync": {"path": "/mnt/sync", "device": "/dev/sda2", "fstype": "exfat", "opts": "defaults,uid=1000,gid=1000"},
     }
     
     targets = [mount] if mount != "all" else ["logging", "sync"]
@@ -502,6 +502,14 @@ def remount_storage(mount: str = "all"):
             results[name] = {"success": False, "error": result.stderr.strip()}
             log("storage", f"Remount {name} failed: {result.stderr.strip()}", "ERROR")
     
+    # Restart services after remount
+    if all(r.get("success") for r in results.values()):
+        subprocess.run(["sudo", "systemctl", "start", "mnt-logging.automount"], capture_output=True)
+        subprocess.run(["sudo", "systemctl", "start", "mnt-sync.automount"], capture_output=True)
+        subprocess.run(["sudo", "systemctl", "start", "can-listener"], timeout=10, capture_output=True)
+        subprocess.run(["sudo", "systemctl", "start", "mount-watcher"], capture_output=True)
+        subprocess.run(["sudo", "systemctl", "start", "log-subscriber"], capture_output=True)
+    
     return {
         "success": all(r.get("success") for r in results.values()),
         "mounts": results
@@ -522,6 +530,11 @@ def unmount_storage(mount: str = "sync"):
         raise HTTPException(status_code=400, detail=f"Unknown mount: {mount}")
     
     path = mounts[mount]
+    
+    # Stop CAN listener if unmounting logging drive
+    if mount == "logging":
+        log("storage", "Stopping CAN listener...", "INFO")
+        subprocess.run(["sudo", "systemctl", "stop", "can-listener"], timeout=10, capture_output=True)
     
     log("storage", f"Unmounting {mount}...", "INFO")
     
@@ -549,3 +562,116 @@ def unmount_storage(mount: str = "sync"):
         else:
             log("storage", f"Failed to unmount {mount}: {result.stderr}", "ERROR")
             raise HTTPException(status_code=500, detail=f"Unmount failed: {result.stderr.strip()}")
+
+
+# ---------- Storage Eject (Safe) ----------
+
+FRIENDLY_MESSAGES = {
+    "postprocess": "Video processing in progress",
+    "ffmpeg": "Video conversion in progress",
+    "rsync": "File sync in progress",
+    "listener": "CAN listener is writing",
+    "log_subscriber": "Log service is writing",
+    "python": "Background task running",
+}
+
+
+def get_blocking_reason(path: str) -> str | None:
+    """Check what is blocking unmount and return friendly message."""
+    import subprocess
+    result = subprocess.run(["lsof", "+D", path], capture_output=True, text=True, timeout=10)
+    
+    if not result.stdout.strip():
+        return None
+    
+    for process, message in FRIENDLY_MESSAGES.items():
+        if process in result.stdout.lower():
+            return message
+    
+    return "Drive is busy"
+
+
+@app.post("/api/storage/eject")
+def eject_storage():
+    """Safely eject drive - stops services, unmounts both partitions."""
+    import subprocess
+    
+    log("storage", "Ejecting drive...", "INFO")
+    
+    # 1. Stop automount first (prevents auto-remount)
+    subprocess.run(["sudo", "systemctl", "stop", "mnt-sync.automount"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "stop", "mnt-logging.automount"], timeout=10)
+    
+    # 2. Stop services that use disk
+    subprocess.run(["sudo", "systemctl", "stop", "can-listener"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "stop", "mount-watcher"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "stop", "log-subscriber"], timeout=10)
+    
+    time.sleep(1)
+    
+    # 3. Sync pending writes
+    subprocess.run(["sync"], timeout=30)
+    
+    # 4. Unmount both partitions
+    results = {}
+    for name, path in [("logging", "/mnt/logging"), ("sync", "/mnt/sync")]:
+        r = subprocess.run(["sudo", "umount", path], capture_output=True, text=True)
+        if r.returncode == 0 or "not mounted" in r.stderr:
+            results[name] = {"success": True}
+        else:
+            reason = get_blocking_reason(path) or r.stderr.strip()
+            results[name] = {"success": False, "reason": reason}
+    
+    all_success = all(r["success"] for r in results.values())
+    
+    if all_success:
+        log("storage", "Drive ejected safely", "INFO")
+        return {"success": True, "message": "Safe to remove drive"}
+    else:
+        # Rollback - restart services
+        subprocess.run(["sudo", "systemctl", "start", "mnt-logging.automount"], timeout=10)
+        subprocess.run(["sudo", "systemctl", "start", "mnt-sync.automount"], timeout=10)
+        subprocess.run(["sudo", "systemctl", "start", "can-listener"], timeout=10)
+        subprocess.run(["sudo", "systemctl", "start", "mount-watcher"], timeout=10)
+        subprocess.run(["sudo", "systemctl", "start", "log-subscriber"], timeout=10)
+        
+        failed = [f"{k}: {v['reason']}" for k, v in results.items() if not v["success"]]
+        log("storage", f"Eject failed: {failed}", "WARN")
+        return {"success": False, "message": failed[0] if failed else "Eject failed", "details": results}
+
+
+@app.post("/api/storage/mount")
+def mount_storage():
+    """Re-enable storage after drive inserted."""
+    import subprocess
+    
+    log("storage", "Mounting drive...", "INFO")
+    
+    # 1. Start automount
+    subprocess.run(["sudo", "systemctl", "start", "mnt-logging.automount"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "start", "mnt-sync.automount"], timeout=10)
+    
+    time.sleep(1)
+    
+    # 2. Touch paths to trigger mount
+    try:
+        os.listdir("/mnt/logging")
+        os.listdir("/mnt/sync")
+    except:
+        pass
+    
+    # 3. Start services
+    subprocess.run(["sudo", "systemctl", "start", "can-listener"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "start", "mount-watcher"], timeout=10)
+    subprocess.run(["sudo", "systemctl", "start", "log-subscriber"], timeout=10)
+    
+    # 4. Check status
+    logging_ok = check_mount("/mnt/logging")["accessible"]
+    sync_ok = check_mount("/mnt/sync")["accessible"]
+    
+    if logging_ok and sync_ok:
+        log("storage", "Drive mounted successfully", "INFO")
+        return {"success": True, "message": "Drive ready"}
+    else:
+        log("storage", "Mount incomplete", "WARN")
+        return {"success": False, "message": "Mount incomplete", "logging": logging_ok, "sync": sync_ok}
