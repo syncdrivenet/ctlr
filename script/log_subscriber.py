@@ -5,6 +5,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
+import sys
 from datetime import datetime, timezone
 import re
 import threading
@@ -16,8 +17,10 @@ DB_PATH = "/mnt/logging/logs/logs.db"
 LOKI_URL = "http://100.71.5.101:3100/loki/api/v1/push"
 FLUSH_INTERVAL = 5
 MAX_ROWS = 100_000
+WATCHDOG_TIMEOUT = 120  # Exit if no MQTT messages for 2 minutes
 
 db_lock = threading.Lock()
+last_activity = time.time()
 
 # -----------------------------
 # Helper functions
@@ -71,6 +74,8 @@ session.mount("https://", adapter)
 # MQTT callback
 # -----------------------------
 def on_message(client, userdata, msg):
+    global last_activity
+    last_activity = time.time()
     try:
         payload = json.loads(msg.payload.decode())
         ts = payload.get("ts", rfc3339_utc())
@@ -155,5 +160,8 @@ client.loop_start()
 # Main loop
 # -----------------------------
 while True:
+    if time.time() - last_activity > WATCHDOG_TIMEOUT:
+        print(f"Watchdog: No MQTT messages in {WATCHDOG_TIMEOUT}s, exiting")
+        sys.exit(1)
     send_pending_logs_to_loki()
     time.sleep(FLUSH_INTERVAL)
