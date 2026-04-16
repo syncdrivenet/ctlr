@@ -82,6 +82,7 @@ After Recording (iOS triggers):
 | `/api/storage/eject` | POST | Safe eject (stops services, unmounts) |
 | `/api/storage/mount` | POST | Mount and restart services |
 | `/api/sessions` | GET | List recorded sessions |
+| `/api/log` | POST | Receive logs from iOS app (→ MQTT) |
 | `/health` | GET | Health check |
 
 ### GET /api/storage/status

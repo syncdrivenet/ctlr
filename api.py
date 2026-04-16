@@ -6,6 +6,7 @@ import time
 import json
 import uuid as uuid_lib
 import shutil
+import subprocess
 import psutil
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -414,6 +415,32 @@ def list_sessions():
     """List recorded sessions"""
     sessions = db.get_sessions()
     return {"sessions": sessions}
+
+
+# ---------- Remote Logging ----------
+
+@app.post("/api/log")
+def receive_log(payload: dict):
+    """Receive log from iOS app, publish to MQTT."""
+    from datetime import datetime, timezone
+    
+    # Add timestamp if missing
+    if "ts" not in payload:
+        payload["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    
+    # Ensure required fields
+    node = payload.get("node", "unknown")
+    payload.setdefault("component", "app")
+    payload.setdefault("level", "INFO")
+    payload.setdefault("message", "")
+    
+    # Publish to MQTT (same as Pi nodes)
+    subprocess.run(
+        ["mosquitto_pub", "-h", "localhost", "-t", f"logging/{node}", "-m", json.dumps(payload)],
+        timeout=2, capture_output=True
+    )
+    
+    return {"ok": True}
 
 @app.get("/health")
 def health():
