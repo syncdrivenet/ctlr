@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import NODES, START_DELAY_MS
 from nodes.client import CameraNode
@@ -44,8 +45,14 @@ state = AppState()
 # ---------- System Stats ----------
 def get_system_stats():
     """Get CPU, memory, temp, disk stats"""
-    cpu = psutil.cpu_percent(interval=0.1)
-    mem = psutil.virtual_memory().percent
+    try:
+        cpu = psutil.cpu_percent(interval=0.1)
+    except:
+        cpu = 0
+    try:
+        mem = psutil.virtual_memory().percent
+    except:
+        mem = 0
     
     temp = None
     try:
@@ -148,18 +155,17 @@ app.add_middleware(
 
 @app.get("/api/status")
 def get_status():
-    """Get system status with camera sync info"""
-    cameras = []
-    all_ready = True
+    """Get system status with camera sync info - queries cameras in parallel"""
     current_uuid = state.current_uuid
     
-    for node in state.nodes:
-        r = node.status()
+    def query_camera(node):
+        """Query a single camera - runs in thread pool"""
         node_name = node.host.split(":")[0]
+        r = node.status()
         
         if r.get("success"):
             d = r.get("data", {})
-            sys = d.get("system", {})
+            sys_info = d.get("system", {})
             sync = d.get("sync", {})
             cam_state = d.get("state", "unknown")
             cam_segment = d.get("segment")
@@ -167,35 +173,55 @@ def get_status():
             # Count segments on ctlr for this camera
             segments_on_ctlr = count_segments(node_name, current_uuid)
             
-            cameras.append({
+            return {
                 "name": node_name,
                 "connected": True,
                 "state": cam_state,
                 "segment": cam_segment,
-                "cpu": sys.get("cpu"),
-                "ram": sys.get("ram"),
-                "disk_free_gb": sys.get("disk_free_gb"),
-                "temp": sys.get("temp"),
-                # Sync status from camera
+                "cpu": sys_info.get("cpu"),
+                "ram": sys_info.get("ram"),
+                "disk_free_gb": sys_info.get("disk_free_gb"),
+                "temp": sys_info.get("temp"),
                 "sync_status": sync.get("status", "idle"),
                 "sync_segments_synced": sync.get("segments_synced", 0),
                 "sync_segments_queued": sync.get("segments_queued", 0),
                 "sync_last": sync.get("last_sync"),
                 "sync_error": sync.get("error"),
-                # Segments counted on ctlr
                 "segments_on_ctlr": segments_on_ctlr,
-            })
-            
-            if cam_state != "idle" and not state.recording:
-                all_ready = False
+            }
         else:
-            cameras.append({
+            return {
                 "name": node_name,
                 "connected": False,
                 "state": "offline",
                 "error": r.get("error")
-            })
-            all_ready = False
+            }
+    
+    # Query all cameras in parallel
+    cameras = []
+    with ThreadPoolExecutor(max_workers=len(state.nodes)) as executor:
+        futures = {executor.submit(query_camera, node): node for node in state.nodes}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                cameras.append(result)
+            except Exception as e:
+                node = futures[future]
+                cameras.append({
+                    "name": node.host.split(":")[0],
+                    "connected": False,
+                    "state": "error",
+                    "error": str(e)
+                })
+    
+    # Sort cameras by name for consistent ordering
+    cameras.sort(key=lambda c: c["name"])
+    
+    # Check if all ready
+    all_ready = all(
+        c.get("connected") and c.get("state") == "idle"
+        for c in cameras
+    )
     
     stats = get_system_stats()
     
@@ -218,63 +244,122 @@ def get_status():
         "can": get_can_status()
     }
 
+
+
 @app.get("/api/sync/status")
-def get_sync_status():
-    """Get detailed sync status for preflight checks."""
-    current_uuid = state.current_uuid
-    cameras = []
-    all_synced = True
-    any_syncing = False
+def get_sync_status(uuid: str = None):
+    """Get detailed sync status for preflight checks - queries cameras in parallel
     
-    for node in state.nodes:
-        r = node.status()
+    Args:
+        uuid: Optional session UUID. If not provided, uses current recording session.
+              For past sessions, pass the session UUID to check sync status.
+    """
+    check_uuid = uuid or state.current_uuid
+    is_past_session = uuid is not None and uuid != state.current_uuid
+    
+    def query_camera_sync(node):
+        """Query a single camera for sync status - runs in thread pool"""
         node_name = node.host.split(":")[0]
+        r = node.status()
         
         if r.get("success"):
             d = r.get("data", {})
             sync = d.get("sync", {})
             cam_segment = d.get("segment") or 0
             
-            segments_on_ctlr = count_segments(node_name, current_uuid)
-            segments_synced = sync.get("segments_synced", 0)
+            segments_on_ctlr = count_segments(node_name, check_uuid)
             sync_status = sync.get("status", "idle")
             
-            # Check if camera has pending segments
-            # segment is 0-indexed, so if segment=5, we have 6 segments (0-5)
-            # But segment starts at 0 when recording starts
-            total_segments = cam_segment + 1 if state.recording else cam_segment
-            pending = max(0, total_segments - segments_on_ctlr)
-            
-            if pending > 0 or sync_status == "syncing":
-                all_synced = False
-            if sync_status == "syncing":
-                any_syncing = True
-            
-            cameras.append({
+            return {
                 "name": node_name,
                 "connected": True,
                 "sync_status": sync_status,
-                "segments_local": total_segments,
+                "segments_local": cam_segment + 1 if state.recording else cam_segment,
                 "segments_on_ctlr": segments_on_ctlr,
-                "segments_pending": pending,
+                "segments_pending": 0,  # Will be calculated after
                 "last_sync": sync.get("last_sync"),
                 "error": sync.get("error"),
-            })
+                "_cam_segment": cam_segment,
+                "_sync_status": sync_status,
+            }
         else:
-            cameras.append({
+            return {
                 "name": node_name,
                 "connected": False,
-                "error": r.get("error")
-            })
+                "error": r.get("error"),
+                "segments_on_ctlr": 0,
+            }
+    
+    # Query all cameras in parallel
+    cameras = []
+    segment_counts = []
+    any_syncing = False
+    
+    with ThreadPoolExecutor(max_workers=len(state.nodes)) as executor:
+        futures = {executor.submit(query_camera_sync, node): node for node in state.nodes}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                cameras.append(result)
+                segment_counts.append(result.get("segments_on_ctlr", 0))
+                if result.get("_sync_status") == "syncing":
+                    any_syncing = True
+            except Exception as e:
+                node = futures[future]
+                cameras.append({
+                    "name": node.host.split(":")[0],
+                    "connected": False,
+                    "error": str(e)
+                })
+                segment_counts.append(0)
+    
+    # Sort cameras by name
+    cameras.sort(key=lambda c: c["name"])
+    
+    # Calculate pending and all_synced
+    all_synced = True
+    if segment_counts:
+        max_count = max(segment_counts)
+        if max_count == 0:
             all_synced = False
+        elif all(c == max_count for c in segment_counts):
+            all_synced = True
+        else:
+            all_synced = False
+            # Update pending counts
+            for cam in cameras:
+                if cam.get("connected"):
+                    cam["segments_pending"] = max_count - cam.get("segments_on_ctlr", 0)
+    
+    # For non-past sessions, also check based on camera state
+    if not is_past_session:
+        for cam in cameras:
+            if cam.get("connected"):
+                cam_segment = cam.pop("_cam_segment", 0)
+                total_segments = cam_segment + 1 if state.recording else cam_segment
+                pending = max(0, total_segments - cam.get("segments_on_ctlr", 0))
+                cam["segments_pending"] = pending
+                if pending > 0:
+                    all_synced = False
+            cam.pop("_sync_status", None)
+    else:
+        # Clean up internal fields
+        for cam in cameras:
+            cam.pop("_cam_segment", None)
+            cam.pop("_sync_status", None)
+    
+    if any_syncing:
+        all_synced = False
     
     return {
         "recording": state.recording,
-        "uuid": current_uuid,
+        "uuid": check_uuid,
         "all_synced": all_synced,
         "any_syncing": any_syncing,
         "cameras": cameras
     }
+
+
 
 @app.post("/api/record/start")
 def start_recording():
@@ -364,17 +449,30 @@ async def sync_phone_data(
     if not uuid:
         raise HTTPException(status_code=400, detail="UUID required")
     
-    # Check sync status before allowing phone sync
-    sync_status = get_sync_status()
-    if sync_status["recording"]:
+    # Check if recording in progress
+    if state.recording:
         raise HTTPException(status_code=409, detail="Recording in progress")
-    if sync_status["any_syncing"]:
-        raise HTTPException(status_code=409, detail="Camera sync in progress")
-    if not sync_status["all_synced"]:
-        pending_cams = [c["name"] for c in sync_status["cameras"] if c.get("segments_pending", 0) > 0]
+    
+    # Check actual files on disk for this UUID (not camera self-report)
+    from config import NODES
+    camera_names = [n.split(":")[0] for n in NODES]
+    segment_counts = {}
+    for cam in camera_names:
+        count = count_segments(cam, uuid)
+        segment_counts[cam] = count
+    
+    # All cameras should have same segment count (synchronized recording)
+    counts = list(segment_counts.values())
+    if not counts or max(counts) == 0:
+        raise HTTPException(status_code=409, detail="No camera segments found for this session")
+    
+    # Check if any camera has fewer segments than others (still syncing)
+    max_count = max(counts)
+    missing = [cam for cam, count in segment_counts.items() if count < max_count]
+    if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Cameras have pending segments: {', '.join(pending_cams)}"
+            detail=f"Cameras still syncing: {", ".join(missing)} ({min(counts)}/{max_count} segments)"
         )
     
     session_dir = LOGGING_DIR / "phone" / uuid
