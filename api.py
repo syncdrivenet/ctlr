@@ -383,6 +383,7 @@ async def sync_phone_data(
     saved_files = []
     for file in files:
         file_path = session_dir / file.filename
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             content = await file.read()
             with open(file_path, "wb") as f:
