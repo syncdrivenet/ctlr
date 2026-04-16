@@ -220,9 +220,22 @@ def process_session(uuid, dry_run=False):
         log("postprocess", f"Failed to create output dir: {e}", "ERROR")
         return False
     
+    # Query session times from database
+    session_times = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute("SELECT started_at, stopped_at FROM sessions WHERE uuid=?", (uuid,)).fetchone()
+        conn.close()
+        if row:
+            session_times = {"started_at": row[0], "stopped_at": row[1]}
+    except Exception as e:
+        log("postprocess", f"Could not read session times: {e}", "WARN")
+
     manifest = {
         "uuid": uuid,
         "folder": folder_name,
+        "started_at": session_times["started_at"] if session_times else None,
+        "stopped_at": session_times["stopped_at"] if session_times else None,
         "processed_at": datetime.now().isoformat(),
         "sources": {}
     }

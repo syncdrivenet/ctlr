@@ -289,3 +289,28 @@ curl -X POST http://ctlr:8000/api/storage/mount
   }
 }
 ```
+
+### manifest.json Format
+
+```json
+{
+  "uuid": "abc12345-...",
+  "folder": "2026-04-14_abc123",
+  "started_at": 1776313714000,
+  "stopped_at": 1776314000000,
+  "processed_at": "2026-04-14T10:40:00.123456",
+  "sources": {
+    "melb-01-cam-01": {
+      "file": "melb-01-cam-01.mp4",
+      "segments": 5,
+      "size_mb": 125.3
+    },
+    "phone": {
+      "files": ["accelerometer.csv", "gyroscope.csv", "gps.csv"]
+    }
+  }
+}
+```
+
+- `started_at` / `stopped_at`: Unix timestamps (ms) from sessions database
+- `processed_at`: When postprocess ran (ISO format)
