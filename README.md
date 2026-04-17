@@ -34,14 +34,18 @@ Central orchestrator for multi-camera recording system. Coordinates cameras, rec
 
 ### Recording Flow
 ```
-1. iOS App ─── POST /api/record/start ───► ctlr
-2. ctlr generates UUID + start_at timestamp
-3. ctlr ─── POST /record/start ───► cam-01, cam-02, cam-03 (parallel)
-4. Cameras wait until start_at, then record synchronized
-5. iOS App ─── POST /api/record/stop ───► ctlr
-6. ctlr ─── POST /record/stop ───► all cameras
-7. Cameras finalize and rsync remaining segments
+1. iOS App generates UUID locally
+2. iOS App ─── Start Watch with UUID ───► Watch confirms
+3. iOS App ─── POST /api/record/start?uuid={uuid} ───► ctlr
+4. ctlr uses provided UUID (or generates if not provided) + start_at timestamp
+5. ctlr ─── POST /record/start ───► cam-01, cam-02, cam-03 (parallel)
+6. Cameras wait until start_at, then record synchronized
+7. iOS App ─── POST /api/record/stop ───► ctlr
+8. ctlr ─── POST /record/stop ───► all cameras
+9. Cameras finalize and rsync remaining segments
 ```
+
+**Note:** Phone generates UUID first and sends to Watch for confirmation before starting controller. This ensures all devices (phone, watch, cameras) use the same session UUID.
 
 ### Sync & Post-Process Flow
 ```
@@ -74,7 +78,7 @@ After Recording (iOS triggers):
 | `/api/status` | GET | System status, cameras, sync info |
 | `/api/sync/status` | GET | Sync status (from camera reports) |
 | `/api/sync/report` | POST | Receive sync status from cameras |
-| `/api/record/start` | POST | Start synchronized recording |
+| `/api/record/start?uuid={uuid}` | POST | Start synchronized recording (uuid optional, generated if not provided) |
 | `/api/record/stop` | POST | Stop recording |
 | `/api/sync/phone` | POST | Upload phone sensor data |
 | `/api/storage/status` | GET | Storage mount health |

@@ -140,12 +140,10 @@ def camera_poller_loop():
     """Background thread to poll cameras every 2s and cache results"""
     def query_camera(node):
         node_name = node.host.split(":")[0]
-        current_uuid = state.current_uuid
         r = node.status()
         if r.get("success"):
             d = r.get("data", {})
             sys_info = d.get("system", {})
-            sync = d.get("sync", {})
             return {
                 "name": node_name,
                 "connected": True,
@@ -155,12 +153,6 @@ def camera_poller_loop():
                 "ram": sys_info.get("ram"),
                 "disk_free_gb": sys_info.get("disk_free_gb"),
                 "temp": sys_info.get("temp"),
-                "sync_status": sync.get("status", "idle"),
-                "sync_segments_synced": sync.get("segments_synced", 0),
-                "sync_segments_queued": sync.get("segments_queued", 0),
-                "sync_last": sync.get("last_sync"),
-                "sync_error": sync.get("error"),
-                "segments_on_ctlr": count_segments(node_name, current_uuid),
             }
         else:
             return {
@@ -298,10 +290,17 @@ def start_recording(uuid: str = None):
                 detail=f"Camera {node.host} not ready"
             )
     
-    session_uuid = uuid if uuid else str(uuid_lib.uuid4())
+    # Use phone-provided UUID or generate locally
+    if uuid:
+        session_uuid = uuid
+        log("recording", f"Received UUID from phone: {session_uuid[:8]}...")
+    else:
+        session_uuid = str(uuid_lib.uuid4())
+        log("recording", f"Generated UUID locally: {session_uuid[:8]}...")
+    
     start_at = int(time.time() * 1000) + START_DELAY_MS
     
-    log("recording", f"Starting session {session_uuid}")
+    log("recording", f"Starting session {session_uuid[:8]} (delay: {START_DELAY_MS}ms)")
     
     for node in state.nodes:
         r = node.start(session_uuid, start_at)
@@ -320,7 +319,7 @@ def start_recording(uuid: str = None):
     
     db.insert_session(session_uuid, start_at)
     publish_status()
-    log("recording", f"Session {session_uuid} started on all cameras")
+    log("recording", f"Session {session_uuid[:8]} started on all cameras")
     
     return {
         "success": True,
@@ -338,7 +337,7 @@ def stop_recording():
     duration = state.duration
     stopped_at = int(time.time() * 1000)
     
-    log("recording", f"Stopping session {session_uuid}")
+    log("recording", f"Stopping session {session_uuid[:8]}")
     
     errors = []
     for node in state.nodes:
@@ -354,7 +353,7 @@ def stop_recording():
     db.update_session_stop(session_uuid, stopped_at)
     publish_status()
     
-    log("recording", f"Session {session_uuid} stopped, duration={duration}s")
+    log("recording", f"Session {session_uuid[:8]} stopped, duration={duration}s")
     
     return {
         "success": len(errors) == 0,
