@@ -285,7 +285,7 @@ def get_sync_status():
 
 
 @app.post("/api/record/start")
-def start_recording():
+def start_recording(uuid: str = None):
     """Start synchronized recording on all cameras"""
     if state.recording:
         raise HTTPException(status_code=409, detail="Already recording")
@@ -298,7 +298,7 @@ def start_recording():
                 detail=f"Camera {node.host} not ready"
             )
     
-    session_uuid = str(uuid_lib.uuid4())
+    session_uuid = uuid if uuid else str(uuid_lib.uuid4())
     start_at = int(time.time() * 1000) + START_DELAY_MS
     
     log("recording", f"Starting session {session_uuid}")

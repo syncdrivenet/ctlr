@@ -139,6 +139,7 @@ def concatenate_videos(segments, output_path):
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", str(concat_file),
             "-c", "copy",
+            "-movflags", "+faststart",
             str(output_path)
         ]
         
