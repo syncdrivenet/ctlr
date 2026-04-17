@@ -72,7 +72,8 @@ After Recording (iOS triggers):
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/status` | GET | System status, cameras, sync info |
-| `/api/sync/status` | GET | Detailed sync status for preflight |
+| `/api/sync/status` | GET | Sync status (from camera reports) |
+| `/api/sync/report` | POST | Receive sync status from cameras |
 | `/api/record/start` | POST | Start synchronized recording |
 | `/api/record/stop` | POST | Stop recording |
 | `/api/sync/phone` | POST | Upload phone sensor data |
